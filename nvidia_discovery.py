@@ -140,33 +140,34 @@ class NVIDIADiscovery:
         gpus = []
         lines = nvidia_smi_output.strip().split('\n')
         
-        if len(lines) < 2:
+        if not lines or not lines[0].strip():
             return gpus
         
-        # Skip header line
-        for line in lines[1:]:
+        # Process each line (no header in noheader format)
+        for line in lines:
             if not line.strip():
                 continue
                 
             parts = [part.strip() for part in line.split(',')]
-            if len(parts) >= 12:
+            if len(parts) >= 5:  # Minimum required fields
                 try:
+                    # Handle different numbers of fields gracefully
                     gpu = GPUInfo(
                         index=int(parts[0]) if parts[0].isdigit() else 0,
-                        name=parts[1],
-                        driver_version=parts[2],
-                        cuda_version=parts[3],
-                        memory_total=parts[4],
-                        memory_used=parts[5],
-                        memory_free=parts[6],
-                        utilization_gpu=parts[7],
-                        utilization_memory=parts[8],
-                        temperature=parts[9],
-                        power_draw=parts[10],
-                        power_limit=parts[11],
+                        name=parts[1] if len(parts) > 1 else "Unknown",
+                        driver_version=parts[2] if len(parts) > 2 else "Unknown",
+                        cuda_version=parts[3] if len(parts) > 3 else "Unknown",
+                        memory_total=parts[4] if len(parts) > 4 else "Unknown",
+                        memory_used=parts[5] if len(parts) > 5 else "Unknown",
+                        memory_free=parts[6] if len(parts) > 6 else "Unknown",
+                        utilization_gpu=parts[7] if len(parts) > 7 else "Unknown",
+                        utilization_memory=parts[8] if len(parts) > 8 else "Unknown",
+                        temperature=parts[9] if len(parts) > 9 else "Unknown",
+                        power_draw=parts[10] if len(parts) > 10 else "Unknown",
+                        power_limit=parts[11] if len(parts) > 11 else "Unknown",
                         uuid=parts[12] if len(parts) > 12 else "Unknown",
                         pci_bus_id=parts[13] if len(parts) > 13 else "Unknown",
-                        compute_capability=parts[14] if len(parts) > 14 else "Unknown"
+                        compute_capability="Unknown"  # Will be filled later if available
                     )
                     gpus.append(gpu)
                 except (ValueError, IndexError) as e:
@@ -184,16 +185,16 @@ class NVIDIADiscovery:
             self.logger.error("nvidia-smi not found. Please ensure NVIDIA drivers are installed.")
             return []
         
-        # Get comprehensive GPU information
-        query_fields = [
+        # Get comprehensive GPU information - try with basic fields first
+        basic_query_fields = [
             'index', 'name', 'driver_version', 'cuda_version',
             'memory.total', 'memory.used', 'memory.free',
             'utilization.gpu', 'utilization.memory', 'temperature.gpu',
-            'power.draw', 'power.limit', 'uuid', 'pci.bus_id',
-            'compute_capability'
+            'power.draw', 'power.limit', 'uuid', 'pci.bus_id'
         ]
         
-        query_string = ','.join(query_fields)
+        # Try basic query first
+        query_string = ','.join(basic_query_fields)
         success, stdout, stderr = self._run_command([
             'nvidia-smi',
             f'--query-gpu={query_string}',
@@ -202,7 +203,16 @@ class NVIDIADiscovery:
         
         if not success:
             self.logger.error(f"Failed to query GPU information: {stderr}")
-            return []
+            # Try even simpler query
+            simple_query = 'index,name,driver_version,memory.total,memory.used'
+            success, stdout, stderr = self._run_command([
+                'nvidia-smi',
+                f'--query-gpu={simple_query}',
+                '--format=csv,noheader,nounits'
+            ])
+            if not success:
+                self.logger.error(f"Failed with simple query too: {stderr}")
+                return []
         
         gpus = self._parse_gpu_info(stdout)
         self.logger.info(f"Discovered {len(gpus)} GPU(s)")
