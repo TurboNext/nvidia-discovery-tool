@@ -1,0 +1,26 @@
+# NVIDIA Discovery and Management Tool Requirements
+# Core dependencies
+requests>=2.25.0
+urllib3>=1.26.0
+
+# Optional dependencies for enhanced functionality
+# Uncomment as needed:
+
+# For enhanced GPU monitoring
+# nvidia-ml-py3>=11.0.0
+
+# For container support detection
+# docker>=5.0.0
+
+# For advanced version parsing
+# packaging>=21.0
+
+# For better JSON handling
+# jsonschema>=3.2.0
+
+# For progress bars (if implementing)
+# tqdm>=4.60.0
+
+# For configuration file support (if implementing)
+# pyyaml>=5.4.0
+# configparser>=5.0.0
