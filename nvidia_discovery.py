@@ -190,7 +190,7 @@ class NVIDIADiscovery:
             'memory.total', 'memory.used', 'memory.free',
             'utilization.gpu', 'utilization.memory', 'temperature.gpu',
             'power.draw', 'power.limit', 'uuid', 'pci.bus_id',
-            'compute_cap'
+            'compute_capability'
         ]
         
         query_string = ','.join(query_fields)
