@@ -197,9 +197,38 @@ class NVIDIADiscovery:
             return []
         
         gpus = self._parse_gpu_info(stdout)
+        
+        # Try to get additional information for each GPU
+        for gpu in gpus:
+            self._enrich_gpu_info(gpu)
+        
         self.logger.info(f"Discovered {len(gpus)} GPU(s)")
         
         return gpus
+    
+    def _enrich_gpu_info(self, gpu: GPUInfo) -> None:
+        """Try to get additional GPU information using alternative methods"""
+        try:
+            # Try to get compute capability using nvidia-smi with individual GPU query
+            success, stdout, stderr = self._run_command([
+                'nvidia-smi', f'--id={gpu.index}',
+                '--query-gpu=compute_cap', '--format=csv,noheader,nounits'
+            ])
+            if success and stdout.strip():
+                gpu.compute_capability = stdout.strip()
+            
+            # Try to get CUDA version from nvidia-smi version output
+            if gpu.cuda_version == "Unknown":
+                success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
+                if success:
+                    # Parse CUDA version from nvidia-smi version output
+                    for line in stdout.split('\n'):
+                        if 'CUDA Version:' in line:
+                            cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
+                            gpu.cuda_version = cuda_ver
+                            break
+        except Exception as e:
+            self.logger.debug(f"Could not enrich GPU {gpu.index} info: {e}")
     
     def discover_software_components(self) -> List[SoftwareInfo]:
         """Discover NVIDIA software components and their versions"""
@@ -427,6 +456,105 @@ class NVIDIADiscovery:
                 path=self._find_tool_path('podman'),
                 status="Available"
             ))
+        
+        # Discover additional NVIDIA tools
+        additional_components = self._discover_additional_tools()
+        components.extend(additional_components)
+        
+        # Check for previously missing tools
+        missing_tools = self._check_missing_tools()
+        components.extend(missing_tools)
+        
+        return components
+    
+    def _discover_additional_tools(self) -> List[SoftwareInfo]:
+        """Discover additional NVIDIA tools and utilities"""
+        components = []
+        
+        if self.verbose:
+            self.logger.info("Checking for additional NVIDIA tools...")
+        
+        # Check for nvidia-settings
+        success, stdout, stderr = self._run_command(['nvidia-settings', '--version'])
+        if success:
+            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
+            version = version_match.group(1) if version_match else "Unknown"
+            components.append(SoftwareInfo(
+                name="nvidia-settings",
+                version=version,
+                path=self._find_tool_path('nvidia-settings'),
+                status="Available"
+            ))
+        
+        # Check for nvidia-xconfig
+        success, stdout, stderr = self._run_command(['nvidia-xconfig', '--version'])
+        if success:
+            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
+            version = version_match.group(1) if version_match else "Unknown"
+            components.append(SoftwareInfo(
+                name="nvidia-xconfig",
+                version=version,
+                path=self._find_tool_path('nvidia-xconfig'),
+                status="Available"
+            ))
+        
+        # Check for nvidia-modprobe
+        success, stdout, stderr = self._run_command(['nvidia-modprobe', '--version'])
+        if success:
+            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
+            version = version_match.group(1) if version_match else "Unknown"
+            components.append(SoftwareInfo(
+                name="nvidia-modprobe",
+                version=version,
+                path=self._find_tool_path('nvidia-modprobe'),
+                status="Available"
+            ))
+        
+        # Check for nvidia-persistenced
+        success, stdout, stderr = self._run_command(['nvidia-persistenced', '--version'])
+        if success:
+            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
+            version = version_match.group(1) if version_match else "Unknown"
+            components.append(SoftwareInfo(
+                name="nvidia-persistenced",
+                version=version,
+                path=self._find_tool_path('nvidia-persistenced'),
+                status="Available"
+            ))
+        
+        return components
+    
+    def _check_missing_tools(self) -> List[SoftwareInfo]:
+        """Check for tools that were previously showing as 'Not found'"""
+        components = []
+        
+        if self.verbose:
+            self.logger.info("Checking for previously missing tools...")
+        
+        # List of tools to check with their expected commands
+        tools_to_check = [
+            ('nvidia-settings', ['nvidia-settings', '--version']),
+            ('nvidia-xconfig', ['nvidia-xconfig', '--version']),
+            ('nvidia-modprobe', ['nvidia-modprobe', '--version']),
+            ('nvidia-persistenced', ['nvidia-persistenced', '--version']),
+        ]
+        
+        for tool_name, cmd in tools_to_check:
+            success, stdout, stderr = self._run_command(cmd)
+            if success:
+                version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
+                version = version_match.group(1) if version_match else "Unknown"
+                components.append(SoftwareInfo(
+                    name=tool_name,
+                    version=version,
+                    path=self._find_tool_path(tool_name),
+                    status="Available"
+                ))
+                if self.verbose:
+                    self.logger.info(f"Found {tool_name} version {version}")
+            else:
+                if self.verbose:
+                    self.logger.debug(f"{tool_name} not found: {stderr}")
         
         return components
     
