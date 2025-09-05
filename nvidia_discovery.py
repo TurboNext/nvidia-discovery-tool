@@ -558,6 +558,57 @@ class NVIDIADiscovery:
         
         return components
     
+    def collect_logs(self) -> Dict[str, Any]:
+        """Collect system and VLLM logs"""
+        logs = {}
+        
+        if self.verbose:
+            self.logger.info("Collecting system and VLLM logs...")
+        
+        # Collect system log (last 100 lines)
+        try:
+            success, stdout, stderr = self._run_command(['tail', '-n', '100', '/var/log/system.log'])
+            if success:
+                logs['system_log'] = stdout
+                if self.verbose:
+                    self.logger.info("Collected system log (last 100 lines)")
+            else:
+                logs['system_log'] = f"Error reading system log: {stderr}"
+                if self.verbose:
+                    self.logger.warning(f"Could not read system log: {stderr}")
+        except Exception as e:
+            logs['system_log'] = f"Exception reading system log: {str(e)}"
+            if self.verbose:
+                self.logger.warning(f"Exception reading system log: {e}")
+        
+        # Collect VLLM log from environment variable
+        try:
+            vllm_log_path = os.environ.get('VLLM_CONFIGURE_LOGGING')
+            if vllm_log_path and os.path.exists(vllm_log_path):
+                success, stdout, stderr = self._run_command(['tail', '-n', '100', vllm_log_path])
+                if success:
+                    logs['vllm_log'] = stdout
+                    logs['vllm_log_path'] = vllm_log_path
+                    if self.verbose:
+                        self.logger.info(f"Collected VLLM log from {vllm_log_path}")
+                else:
+                    logs['vllm_log'] = f"Error reading VLLM log: {stderr}"
+                    logs['vllm_log_path'] = vllm_log_path
+                    if self.verbose:
+                        self.logger.warning(f"Could not read VLLM log from {vllm_log_path}: {stderr}")
+            else:
+                logs['vllm_log'] = "VLLM_CONFIGURE_LOGGING environment variable not set or file not found"
+                logs['vllm_log_path'] = "Not found"
+                if self.verbose:
+                    self.logger.info("VLLM_CONFIGURE_LOGGING not set or file not found")
+        except Exception as e:
+            logs['vllm_log'] = f"Exception reading VLLM log: {str(e)}"
+            logs['vllm_log_path'] = "Error"
+            if self.verbose:
+                self.logger.warning(f"Exception reading VLLM log: {e}")
+        
+        return logs
+    
     def run_discovery(self) -> Dict[str, Any]:
         """Run complete discovery process"""
         self.logger.info("Starting NVIDIA discovery process...")
@@ -571,10 +622,14 @@ class NVIDIADiscovery:
         # Discover software components
         self.software_components = self.discover_software_components()
         
+        # Collect logs
+        self.logs = self.collect_logs()
+        
         return {
             'system_info': asdict(self.system_info),
             'gpus': [asdict(gpu) for gpu in self.gpus],
             'software_components': [asdict(comp) for comp in self.software_components],
+            'logs': self.logs,
             'discovery_timestamp': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
         }
     
@@ -641,6 +696,47 @@ class NVIDIADiscovery:
                 report.append(f"  - {comp['name']}: {comp['status']}")
                 if comp['path'] != "Not found":
                     report.append(f"    Path: {comp['path']}")
+        
+        # Log Information
+        if 'logs' in data and data['logs']:
+            report.append("LOG INFORMATION")
+            report.append("-" * 40)
+            
+            logs = data['logs']
+            
+            # System log
+            if 'system_log' in logs:
+                report.append("System Log (last 100 lines):")
+                report.append(f"Path: /var/log/system.log")
+                report.append("")
+                if logs['system_log'].startswith("Error") or logs['system_log'].startswith("Exception"):
+                    report.append(f"Error: {logs['system_log']}")
+                else:
+                    # Show first 20 lines of system log
+                    log_lines = logs['system_log'].split('\n')[:20]
+                    for line in log_lines:
+                        if line.strip():
+                            report.append(f"  {line}")
+                    if len(logs['system_log'].split('\n')) > 20:
+                        report.append(f"  ... ({len(logs['system_log'].split('\n')) - 20} more lines)")
+                report.append("")
+            
+            # VLLM log
+            if 'vllm_log' in logs:
+                report.append("VLLM Log:")
+                report.append(f"Path: {logs.get('vllm_log_path', 'Not found')}")
+                report.append("")
+                if logs['vllm_log'].startswith("Error") or logs['vllm_log'].startswith("Exception") or logs['vllm_log'].startswith("VLLM_CONFIGURE_LOGGING"):
+                    report.append(f"Status: {logs['vllm_log']}")
+                else:
+                    # Show first 20 lines of VLLM log
+                    log_lines = logs['vllm_log'].split('\n')[:20]
+                    for line in log_lines:
+                        if line.strip():
+                            report.append(f"  {line}")
+                    if len(logs['vllm_log'].split('\n')) > 20:
+                        report.append(f"  ... ({len(logs['vllm_log'].split('\n')) - 20} more lines)")
+                report.append("")
         
         report.append("")
         report.append("=" * 80)
