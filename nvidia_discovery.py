@@ -559,53 +559,142 @@ class NVIDIADiscovery:
         return components
     
     def collect_logs(self) -> Dict[str, Any]:
-        """Collect system and VLLM logs"""
+        """Collect system and VLLM logs from multiple locations"""
         logs = {}
         
         if self.verbose:
             self.logger.info("Collecting system and VLLM logs...")
         
-        # Collect system log (last 100 lines)
-        try:
-            success, stdout, stderr = self._run_command(['tail', '-n', '100', '/var/log/system.log'])
-            if success:
-                logs['system_log'] = stdout
-                if self.verbose:
-                    self.logger.info("Collected system log (last 100 lines)")
-            else:
-                logs['system_log'] = f"Error reading system log: {stderr}"
-                if self.verbose:
-                    self.logger.warning(f"Could not read system log: {stderr}")
-        except Exception as e:
-            logs['system_log'] = f"Exception reading system log: {str(e)}"
-            if self.verbose:
-                self.logger.warning(f"Exception reading system log: {e}")
+        # Collect system logs from multiple locations
+        system_logs = self._collect_system_logs()
+        logs.update(system_logs)
         
         # Collect VLLM log from environment variable
+        vllm_logs = self._collect_vllm_logs()
+        logs.update(vllm_logs)
+        
+        return logs
+    
+    def _collect_system_logs(self) -> Dict[str, Any]:
+        """Collect system logs from various locations"""
+        logs = {}
+        
+        # Define potential system log locations
+        log_locations = [
+            ('/var/log/syslog', 'syslog'),
+            ('/var/log/kern.log', 'kernel'),
+            ('/var/log/system.log', 'system'),
+            ('/var/log/messages', 'messages'),
+            ('/var/log/dmesg', 'dmesg')
+        ]
+        
+        collected_logs = []
+        
+        for log_path, log_name in log_locations:
+            try:
+                if os.path.exists(log_path):
+                    success, stdout, stderr = self._run_command(['tail', '-n', '50', log_path])
+                    if success:
+                        collected_logs.append({
+                            'name': log_name,
+                            'path': log_path,
+                            'content': stdout,
+                            'lines': len(stdout.split('\n'))
+                        })
+                        if self.verbose:
+                            self.logger.info(f"Collected {log_name} log from {log_path}")
+                    else:
+                        if self.verbose:
+                            self.logger.warning(f"Could not read {log_name} log: {stderr}")
+                else:
+                    if self.verbose:
+                        self.logger.debug(f"{log_name} log not found at {log_path}")
+            except Exception as e:
+                if self.verbose:
+                    self.logger.warning(f"Exception reading {log_name} log: {e}")
+        
+        # Try journalctl as fallback
         try:
-            vllm_log_path = os.environ.get('VLLM_CONFIGURE_LOGGING')
-            if vllm_log_path and os.path.exists(vllm_log_path):
+            success, stdout, stderr = self._run_command(['journalctl', '--no-pager', '-n', '50'])
+            if success:
+                collected_logs.append({
+                    'name': 'journalctl',
+                    'path': 'systemd journal',
+                    'content': stdout,
+                    'lines': len(stdout.split('\n'))
+                })
+                if self.verbose:
+                    self.logger.info("Collected systemd journal log")
+        except Exception as e:
+            if self.verbose:
+                self.logger.debug(f"Could not read journalctl: {e}")
+        
+        logs['system_logs'] = collected_logs
+        logs['system_log_count'] = len(collected_logs)
+        
+        return logs
+    
+    def _collect_vllm_logs(self) -> Dict[str, Any]:
+        """Collect VLLM logs from environment variable and common locations"""
+        logs = {}
+        
+        # Check VLLM_CONFIGURE_LOGGING environment variable
+        vllm_log_path = os.environ.get('VLLM_CONFIGURE_LOGGING')
+        if vllm_log_path and os.path.exists(vllm_log_path):
+            try:
                 success, stdout, stderr = self._run_command(['tail', '-n', '100', vllm_log_path])
                 if success:
                     logs['vllm_log'] = stdout
                     logs['vllm_log_path'] = vllm_log_path
+                    logs['vllm_log_source'] = 'environment_variable'
                     if self.verbose:
-                        self.logger.info(f"Collected VLLM log from {vllm_log_path}")
+                        self.logger.info(f"Collected VLLM log from environment variable: {vllm_log_path}")
                 else:
                     logs['vllm_log'] = f"Error reading VLLM log: {stderr}"
                     logs['vllm_log_path'] = vllm_log_path
+                    logs['vllm_log_source'] = 'environment_variable_error'
                     if self.verbose:
                         self.logger.warning(f"Could not read VLLM log from {vllm_log_path}: {stderr}")
-            else:
-                logs['vllm_log'] = "VLLM_CONFIGURE_LOGGING environment variable not set or file not found"
-                logs['vllm_log_path'] = "Not found"
+            except Exception as e:
+                logs['vllm_log'] = f"Exception reading VLLM log: {str(e)}"
+                logs['vllm_log_path'] = vllm_log_path
+                logs['vllm_log_source'] = 'environment_variable_exception'
                 if self.verbose:
-                    self.logger.info("VLLM_CONFIGURE_LOGGING not set or file not found")
-        except Exception as e:
-            logs['vllm_log'] = f"Exception reading VLLM log: {str(e)}"
-            logs['vllm_log_path'] = "Error"
-            if self.verbose:
-                self.logger.warning(f"Exception reading VLLM log: {e}")
+                    self.logger.warning(f"Exception reading VLLM log: {e}")
+        else:
+            # Try common VLLM log locations
+            common_vllm_paths = [
+                '/var/log/vllm.log',
+                '/tmp/vllm.log',
+                './vllm.log',
+                '~/vllm.log',
+                '/opt/vllm/logs/vllm.log'
+            ]
+            
+            vllm_found = False
+            for log_path in common_vllm_paths:
+                expanded_path = os.path.expanduser(log_path)
+                if os.path.exists(expanded_path):
+                    try:
+                        success, stdout, stderr = self._run_command(['tail', '-n', '100', expanded_path])
+                        if success:
+                            logs['vllm_log'] = stdout
+                            logs['vllm_log_path'] = expanded_path
+                            logs['vllm_log_source'] = 'common_location'
+                            vllm_found = True
+                            if self.verbose:
+                                self.logger.info(f"Collected VLLM log from common location: {expanded_path}")
+                            break
+                    except Exception as e:
+                        if self.verbose:
+                            self.logger.debug(f"Could not read VLLM log from {expanded_path}: {e}")
+            
+            if not vllm_found:
+                logs['vllm_log'] = "VLLM_CONFIGURE_LOGGING environment variable not set and no VLLM logs found in common locations"
+                logs['vllm_log_path'] = "Not found"
+                logs['vllm_log_source'] = 'not_found'
+                if self.verbose:
+                    self.logger.info("VLLM_CONFIGURE_LOGGING not set and no VLLM logs found")
         
         return logs
     
@@ -704,38 +793,45 @@ class NVIDIADiscovery:
             
             logs = data['logs']
             
-            # System log
-            if 'system_log' in logs:
-                report.append("System Log (last 100 lines):")
-                report.append(f"Path: /var/log/system.log")
+            # System logs
+            if 'system_logs' in logs and logs['system_logs']:
+                report.append(f"System Logs (found {logs.get('system_log_count', 0)} log files):")
                 report.append("")
-                if logs['system_log'].startswith("Error") or logs['system_log'].startswith("Exception"):
-                    report.append(f"Error: {logs['system_log']}")
-                else:
-                    # Show first 20 lines of system log
-                    log_lines = logs['system_log'].split('\n')[:20]
+                
+                for log_info in logs['system_logs']:
+                    report.append(f"{log_info['name'].upper()} Log:")
+                    report.append(f"  Path: {log_info['path']}")
+                    report.append(f"  Lines: {log_info['lines']}")
+                    report.append("")
+                    
+                    # Show first 10 lines of each log
+                    log_lines = log_info['content'].split('\n')[:10]
                     for line in log_lines:
                         if line.strip():
-                            report.append(f"  {line}")
-                    if len(logs['system_log'].split('\n')) > 20:
-                        report.append(f"  ... ({len(logs['system_log'].split('\n')) - 20} more lines)")
+                            report.append(f"    {line}")
+                    if log_info['lines'] > 10:
+                        report.append(f"    ... ({log_info['lines'] - 10} more lines)")
+                    report.append("")
+            else:
+                report.append("System Logs: No system logs found")
                 report.append("")
             
             # VLLM log
             if 'vllm_log' in logs:
                 report.append("VLLM Log:")
-                report.append(f"Path: {logs.get('vllm_log_path', 'Not found')}")
+                report.append(f"  Path: {logs.get('vllm_log_path', 'Not found')}")
+                report.append(f"  Source: {logs.get('vllm_log_source', 'unknown')}")
                 report.append("")
                 if logs['vllm_log'].startswith("Error") or logs['vllm_log'].startswith("Exception") or logs['vllm_log'].startswith("VLLM_CONFIGURE_LOGGING"):
-                    report.append(f"Status: {logs['vllm_log']}")
+                    report.append(f"  Status: {logs['vllm_log']}")
                 else:
-                    # Show first 20 lines of VLLM log
-                    log_lines = logs['vllm_log'].split('\n')[:20]
+                    # Show first 15 lines of VLLM log
+                    log_lines = logs['vllm_log'].split('\n')[:15]
                     for line in log_lines:
                         if line.strip():
-                            report.append(f"  {line}")
-                    if len(logs['vllm_log'].split('\n')) > 20:
-                        report.append(f"  ... ({len(logs['vllm_log'].split('\n')) - 20} more lines)")
+                            report.append(f"    {line}")
+                    if len(logs['vllm_log'].split('\n')) > 15:
+                        report.append(f"    ... ({len(logs['vllm_log'].split('\n')) - 15} more lines)")
                 report.append("")
         
         report.append("")
