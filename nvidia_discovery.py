@@ -61,7 +61,7 @@ class SystemInfo:
     cuda_runtime_version: str
     uname_output: str
     distribution: str
-    package_managers: List[str]
+    package_managers: List[Dict[str, str]]
     disk_info: Dict[str, Any]
     network_info: str
 
@@ -244,16 +244,15 @@ class NVIDIADiscovery:
             if success and stdout.strip():
                 gpu.compute_capability = stdout.strip()
             
-            # Try to get CUDA version from nvidia-smi version output
-            if gpu.cuda_version == "Unknown":
-                success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
-                if success:
-                    # Parse CUDA version from nvidia-smi version output
-                    for line in stdout.split('\n'):
-                        if 'CUDA Version:' in line:
-                            cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
-                            gpu.cuda_version = cuda_ver
-                            break
+            # Always try to get CUDA version from nvidia-smi version output
+            success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
+            if success:
+                # Parse CUDA version from nvidia-smi version output
+                for line in stdout.split('\n'):
+                    if 'CUDA Version:' in line:
+                        cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
+                        gpu.cuda_version = cuda_ver
+                        break
         except Exception as e:
             self.logger.debug(f"Could not enrich GPU {gpu.index} info: {e}")
     
@@ -599,8 +598,8 @@ class NVIDIADiscovery:
             pass
         return "Unknown"
     
-    def _discover_package_managers(self) -> List[str]:
-        """Discover available package managers on the system"""
+    def _discover_package_managers(self) -> List[Dict[str, str]]:
+        """Discover available package managers on the system with versions"""
         package_managers = []
         
         # List of Unix/Linux package managers to check
@@ -646,11 +645,28 @@ class NVIDIADiscovery:
         ]
         
         for pm_name, command in pm_commands:
-            success, _, _ = self._run_command(command.split())
+            success, stdout, _ = self._run_command(command.split())
             if success:
-                package_managers.append(pm_name)
+                version = self._extract_version_from_output(stdout, pm_name)
+                package_managers.append({
+                    'name': pm_name,
+                    'version': version
+                })
         
         return package_managers
+    
+    def _extract_version_from_output(self, output: str, pm_name: str) -> str:
+        """Extract version from package manager output"""
+        if not output:
+            return "Unknown"
+        
+        # Try to find version pattern
+        version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', output)
+        if version_match:
+            return version_match.group(1)
+        
+        # Return first line if no version pattern found
+        return output.split('\n')[0].strip()
     
     def _get_disk_info(self) -> Dict[str, Any]:
         """Get system disk information"""
@@ -684,63 +700,90 @@ class NVIDIADiscovery:
         
         return disk_info
     
-    def collect_logs(self) -> Dict[str, Any]:
-        """Collect system logs from multiple locations"""
-        logs = {}
+    def _load_thresholds(self) -> List[Dict[str, str]]:
+        """Load thresholds from CSV file"""
+        thresholds = []
+        csv_path = os.path.join(os.path.dirname(__file__), 'thresholds.csv')
         
-        if self.verbose:
-            self.logger.info("Collecting system logs...")
+        try:
+            with open(csv_path, 'r') as f:
+                lines = f.readlines()
+                if len(lines) > 1:  # Skip header
+                    for line in lines[1:]:
+                        parts = line.strip().split(',')
+                        if len(parts) >= 3:
+                            thresholds.append({
+                                'component': parts[0],
+                                'threshold': parts[1],
+                                'operator': parts[2],
+                                'description': parts[3] if len(parts) > 3 else ''
+                            })
+        except Exception as e:
+            if self.verbose:
+                self.logger.warning(f"Could not load thresholds: {e}")
         
-        # Collect system logs from multiple locations
-        system_logs = self._collect_system_logs()
-        logs.update(system_logs)
-        
-        return logs
+        return thresholds
     
-    def _collect_system_logs(self) -> Dict[str, Any]:
-        """Collect system logs from various locations"""
-        logs = {}
+    def _check_thresholds(self, data: Dict[str, Any], thresholds: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Check measured values against thresholds"""
+        results = []
         
-        # Define potential system log locations
-        log_locations = [
-            ('/var/log/syslog', 'syslog'),
-            ('/var/log/kern.log', 'kernel'),
-            ('/var/log/system.log', 'system'),
-            ('/var/log/messages', 'messages'),
-            ('/var/log/dmesg', 'dmesg')
-        ]
+        for threshold in thresholds:
+            component = threshold['component']
+            threshold_value = threshold['threshold']
+            operator = threshold['operator']
+            
+            # Get measured value based on component
+            measured_value = self._get_measured_value(data, component)
+            
+            if measured_value and measured_value != "Unknown":
+                passed = self._compare_versions(measured_value, threshold_value, operator)
+                results.append({
+                    'component': component,
+                    'measured': measured_value,
+                    'threshold': threshold_value,
+                    'passed': passed
+                })
         
-        collected_logs = []
-        
-        for log_path, log_name in log_locations:
-            try:
-                if os.path.exists(log_path):
-                    success, stdout, stderr = self._run_command(['tail', '-n', '50', log_path])
-                    if success:
-                        collected_logs.append({
-                            'name': log_name,
-                            'path': log_path,
-                            'content': stdout,
-                            'lines': len(stdout.split('\n'))
-                        })
-                        if self.verbose:
-                            self.logger.info(f"Collected {log_name} log from {log_path}")
-                    else:
-                        if self.verbose:
-                            self.logger.warning(f"Could not read {log_name} log: {stderr}")
-                else:
-                    if self.verbose:
-                        self.logger.debug(f"{log_name} log not found at {log_path}")
-            except Exception as e:
-                if self.verbose:
-                    self.logger.warning(f"Exception reading {log_name} log: {e}")
-        
-        
-        logs['system_logs'] = collected_logs
-        logs['system_log_count'] = len(collected_logs)
-        
-        return logs
+        return results
     
+    def _get_measured_value(self, data: Dict[str, Any], component: str) -> str:
+        """Get measured value for a component"""
+        if component == 'cuda_version':
+            # Get CUDA version from GPU info or system info
+            gpus = data.get('gpus', [])
+            if gpus and len(gpus) > 0:
+                return gpus[0].get('cuda_version', 'Unknown')
+            return data.get('system_info', {}).get('cuda_runtime_version', 'Unknown')
+        
+        return "Unknown"
+    
+    def _compare_versions(self, measured: str, threshold: str, operator: str) -> bool:
+        """Compare version strings"""
+        try:
+            # Convert version strings to comparable format
+            measured_parts = [int(x) for x in measured.split('.')]
+            threshold_parts = [int(x) for x in threshold.split('.')]
+            
+            # Pad with zeros if needed
+            max_len = max(len(measured_parts), len(threshold_parts))
+            measured_parts.extend([0] * (max_len - len(measured_parts)))
+            threshold_parts.extend([0] * (max_len - len(threshold_parts)))
+            
+            if operator == '>=':
+                return measured_parts >= threshold_parts
+            elif operator == '>':
+                return measured_parts > threshold_parts
+            elif operator == '<=':
+                return measured_parts <= threshold_parts
+            elif operator == '<':
+                return measured_parts < threshold_parts
+            elif operator == '==':
+                return measured_parts == threshold_parts
+            else:
+                return False
+        except:
+            return False
     
     def run_discovery(self) -> Dict[str, Any]:
         """Run complete discovery process"""
@@ -755,14 +798,10 @@ class NVIDIADiscovery:
         # Discover software components
         self.software_components = self.discover_software_components()
         
-        # Collect logs
-        self.logs = self.collect_logs()
-        
         return {
             'system_info': asdict(self.system_info),
             'gpus': [asdict(gpu) for gpu in self.gpus],
             'software_components': [asdict(comp) for comp in self.software_components],
-            'logs': self.logs,
             'discovery_timestamp': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
         }
     
@@ -803,7 +842,7 @@ class NVIDIADiscovery:
             report.append("PACKAGE MANAGERS")
             report.append("-" * 40)
             for pm in sys_info['package_managers']:
-                report.append(f"  - {pm}")
+                report.append(f"  - {pm['name']}: {pm['version']}")
             report.append("")
         
         # Disk Information
@@ -881,38 +920,20 @@ class NVIDIADiscovery:
                 if comp['path'] != "Not found":
                     report.append(f"    Path: {comp['path']}")
         
-        # Log Information
-        if 'logs' in data and data['logs']:
-            report.append("LOG INFORMATION")
-            report.append("-" * 40)
-            
-            logs = data['logs']
-            
-            # System logs
-            if 'system_logs' in logs and logs['system_logs']:
-                report.append(f"System Logs (found {logs.get('system_log_count', 0)} log files):")
-                report.append("")
-                
-                for log_info in logs['system_logs']:
-                    report.append(f"{log_info['name'].upper()} Log:")
-                    report.append(f"  Path: {log_info['path']}")
-                    report.append(f"  Lines: {log_info['lines']}")
-                    report.append("")
-                    
-                    # Show first 10 lines of each log
-                    log_lines = log_info['content'].split('\n')[:10]
-                    for line in log_lines:
-                        if line.strip():
-                            report.append(f"    {line}")
-                    if log_info['lines'] > 10:
-                        report.append(f"    ... ({log_info['lines'] - 10} more lines)")
-                    report.append("")
-            else:
-                report.append("System Logs: No system logs found")
-                report.append("")
-            
+        # Threshold Information
+        thresholds = self._load_thresholds()
+        threshold_results = self._check_thresholds(data, thresholds)
         
-        report.append("")
+        if threshold_results:
+            report.append("THRESHOLD VERIFICATION")
+            report.append("-" * 40)
+            report.append(f"{'Component':<20} {'Measured':<15} {'Threshold':<15} {'Status':<10}")
+            report.append("-" * 60)
+            for result in threshold_results:
+                status = "PASS" if result['passed'] else "FAIL"
+                report.append(f"{result['component']:<20} {result['measured']:<15} {result['threshold']:<15} {status:<10}")
+            report.append("")
+        
         report.append("=" * 80)
         
         return "\n".join(report)
