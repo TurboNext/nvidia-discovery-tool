@@ -146,9 +146,16 @@ class NVIDIADiscovery:
         success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
             for line in stdout.split('\n'):
+                # Try different patterns for CUDA version
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
                     break
+                elif 'CUDA' in line and 'Version' in line:
+                    # Try to extract from lines like "CUDA 12.6" or similar
+                    cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
+                    if cuda_match:
+                        cuda_runtime_version = cuda_match.group(1)
+                        break
         
         # Fallback to nvcc if nvidia-smi didn't work
         if cuda_runtime_version == "Unknown":
@@ -259,13 +266,27 @@ class NVIDIADiscovery:
             success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
             if success and stdout:
                 self.logger.debug(f"nvidia-smi version output: {stdout}")
-                # Parse CUDA version from nvidia-smi version output
+                # Parse CUDA version from nvidia-smi version output - try multiple patterns
+                cuda_version_found = False
                 for line in stdout.split('\n'):
+                    # Try different patterns for CUDA version
                     if 'CUDA Version:' in line:
                         cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
                         gpu.cuda_version = cuda_ver
-                        self.logger.debug(f"Extracted CUDA version: {cuda_ver}")
+                        self.logger.debug(f"Extracted CUDA version from 'CUDA Version:': {cuda_ver}")
+                        cuda_version_found = True
                         break
+                    elif 'CUDA' in line and 'Version' in line:
+                        # Try to extract from lines like "CUDA 12.6" or similar
+                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
+                        if cuda_match:
+                            gpu.cuda_version = cuda_match.group(1)
+                            self.logger.debug(f"Extracted CUDA version from pattern: {gpu.cuda_version}")
+                            cuda_version_found = True
+                            break
+                
+                if not cuda_version_found and self.verbose:
+                    self.logger.warning(f"Could not extract CUDA version from nvidia-smi output: {stdout}")
         except Exception as e:
             self.logger.debug(f"Could not enrich GPU {gpu.index} info: {e}")
     
@@ -790,8 +811,14 @@ class NVIDIADiscovery:
             success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
             if success and stdout:
                 for line in stdout.split('\n'):
+                    # Try different patterns for CUDA version
                     if 'CUDA Version:' in line:
                         return line.split('CUDA Version:')[1].strip().split()[0]
+                    elif 'CUDA' in line and 'Version' in line:
+                        # Try to extract from lines like "CUDA 12.6" or similar
+                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
+                        if cuda_match:
+                            return cuda_match.group(1)
             
             return 'Unknown'
         
