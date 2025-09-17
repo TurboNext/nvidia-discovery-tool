@@ -139,13 +139,24 @@ class NVIDIADiscovery:
         success, stdout, _ = self._run_command(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader,nounits'])
         nvidia_driver_version = stdout.strip().split('\n')[0] if success and stdout.strip() else "Unknown"
         
-        # Get CUDA runtime version
-        success, stdout, _ = self._run_command(['nvcc', '--version'])
+        # Get CUDA runtime version - try nvidia-smi first, then nvcc
         cuda_runtime_version = "Unknown"
+        
+        # Try nvidia-smi first (more reliable for CUDA version)
+        success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
-            match = re.search(r'release (\d+\.\d+)', stdout)
-            if match:
-                cuda_runtime_version = match.group(1)
+            for line in stdout.split('\n'):
+                if 'CUDA Version:' in line:
+                    cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
+                    break
+        
+        # Fallback to nvcc if nvidia-smi didn't work
+        if cuda_runtime_version == "Unknown":
+            success, stdout, _ = self._run_command(['nvcc', '--version'])
+            if success and stdout:
+                match = re.search(r'release (\d+\.\d+)', stdout)
+                if match:
+                    cuda_runtime_version = match.group(1)
         
         return SystemInfo(
             hostname=hostname,
@@ -246,12 +257,14 @@ class NVIDIADiscovery:
             
             # Always try to get CUDA version from nvidia-smi version output
             success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
-            if success:
+            if success and stdout:
+                self.logger.debug(f"nvidia-smi version output: {stdout}")
                 # Parse CUDA version from nvidia-smi version output
                 for line in stdout.split('\n'):
                     if 'CUDA Version:' in line:
                         cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
                         gpu.cuda_version = cuda_ver
+                        self.logger.debug(f"Extracted CUDA version: {cuda_ver}")
                         break
         except Exception as e:
             self.logger.debug(f"Could not enrich GPU {gpu.index} info: {e}")
@@ -728,6 +741,9 @@ class NVIDIADiscovery:
         """Check measured values against thresholds"""
         results = []
         
+        if self.verbose:
+            self.logger.info(f"Checking {len(thresholds)} thresholds")
+        
         for threshold in thresholds:
             component = threshold['component']
             threshold_value = threshold['threshold']
@@ -735,6 +751,9 @@ class NVIDIADiscovery:
             
             # Get measured value based on component
             measured_value = self._get_measured_value(data, component)
+            
+            if self.verbose:
+                self.logger.info(f"Threshold check: {component} = {measured_value} vs {threshold_value} ({operator})")
             
             if measured_value and measured_value != "Unknown":
                 passed = self._compare_versions(measured_value, threshold_value, operator)
@@ -744,17 +763,37 @@ class NVIDIADiscovery:
                     'threshold': threshold_value,
                     'passed': passed
                 })
+                if self.verbose:
+                    self.logger.info(f"Threshold result: {component} = {passed}")
+        
+        if self.verbose:
+            self.logger.info(f"Threshold results: {len(results)} checks completed")
         
         return results
     
     def _get_measured_value(self, data: Dict[str, Any], component: str) -> str:
         """Get measured value for a component"""
         if component == 'cuda_version':
-            # Get CUDA version from GPU info or system info
+            # Get CUDA version from GPU info first, then system info
             gpus = data.get('gpus', [])
             if gpus and len(gpus) > 0:
-                return gpus[0].get('cuda_version', 'Unknown')
-            return data.get('system_info', {}).get('cuda_runtime_version', 'Unknown')
+                cuda_version = gpus[0].get('cuda_version', 'Unknown')
+                if cuda_version != 'Unknown':
+                    return cuda_version
+            
+            # Fallback to system info
+            system_cuda = data.get('system_info', {}).get('cuda_runtime_version', 'Unknown')
+            if system_cuda != 'Unknown':
+                return system_cuda
+            
+            # Last resort: try to get from nvidia-smi directly
+            success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
+            if success and stdout:
+                for line in stdout.split('\n'):
+                    if 'CUDA Version:' in line:
+                        return line.split('CUDA Version:')[1].strip().split()[0]
+            
+            return 'Unknown'
         
         return "Unknown"
     
