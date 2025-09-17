@@ -139,14 +139,12 @@ class NVIDIADiscovery:
         success, stdout, _ = self._run_command(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader,nounits'])
         nvidia_driver_version = stdout.strip().split('\n')[0] if success and stdout.strip() else "Unknown"
         
-        # Get CUDA runtime version - try nvidia-smi first, then nvcc
+        # Get CUDA runtime version from nvidia-smi (primary source)
         cuda_runtime_version = "Unknown"
-        
-        # Try nvidia-smi first (more reliable for CUDA version)
         success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
             for line in stdout.split('\n'):
-                # Try different patterns for CUDA version
+                # Look for CUDA version in nvidia-smi output
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
                     break
@@ -156,14 +154,6 @@ class NVIDIADiscovery:
                     if cuda_match:
                         cuda_runtime_version = cuda_match.group(1)
                         break
-        
-        # Fallback to nvcc if nvidia-smi didn't work
-        if cuda_runtime_version == "Unknown":
-            success, stdout, _ = self._run_command(['nvcc', '--version'])
-            if success and stdout:
-                match = re.search(r'release (\d+\.\d+)', stdout)
-                if match:
-                    cuda_runtime_version = match.group(1)
         
         return SystemInfo(
             hostname=hostname,
@@ -310,6 +300,7 @@ class NVIDIADiscovery:
             ('nvidia-xconfig', 'NVIDIA X Configuration'),
             ('nvidia-modprobe', 'NVIDIA Module Probe'),
             ('nvidia-persistenced', 'NVIDIA Persistence Daemon'),
+            ('nvidia-ctk', 'NVIDIA Container Toolkit'),
         ]
         
         for tool, description in nvidia_tools:
@@ -425,29 +416,18 @@ class NVIDIADiscovery:
         """Discover NVIDIA-related Python packages"""
         components = []
         
-        python_packages = [
-            'pynvml',
-            'nvidia-ml-py3',
-            'cupy',
-            'cudf',
-            'rapids',
-            'tensorflow-gpu',
-            'torch',
-            'tensorrt',
-            'cudnn',
-        ]
-        
-        for package in python_packages:
-            version = self._get_python_package_version(package)
-            path = self._find_python_package_path(package)
-            status = "Available" if version != "Not found" else "Not found"
-            
-            components.append(SoftwareInfo(
-                name=f"python-{package}",
-                version=version,
-                path=path,
-                status=status
-            ))
+        # Removed python package discovery as requested
+        # python_packages = [
+        #     'pynvml',
+        #     'nvidia-ml-py3',
+        #     'cupy',
+        #     'cudf',
+        #     'rapids',
+        #     'tensorflow-gpu',
+        #     'torch',
+        #     'tensorrt',
+        #     'cudnn',
+        # ]
         
         return components
     
@@ -521,9 +501,10 @@ class NVIDIADiscovery:
         additional_components = self._discover_additional_tools()
         components.extend(additional_components)
         
-        # Check for previously missing tools
-        missing_tools = self._check_missing_tools()
-        components.extend(missing_tools)
+        
+        # Discover NVIDIA Container Toolkit configuration
+        nvidia_ctk_config = self._discover_nvidia_ctk_config()
+        components.extend(nvidia_ctk_config)
         
         return components
     
@@ -534,87 +515,87 @@ class NVIDIADiscovery:
         if self.verbose:
             self.logger.info("Checking for additional NVIDIA tools...")
         
-        # Check for nvidia-settings
-        success, stdout, stderr = self._run_command(['nvidia-settings', '--version'])
-        if success:
-            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
-            version = version_match.group(1) if version_match else "Unknown"
-            components.append(SoftwareInfo(
-                name="nvidia-settings",
-                version=version,
-                path=self._find_tool_path('nvidia-settings'),
-                status="Available"
-            ))
-        
-        # Check for nvidia-xconfig
-        success, stdout, stderr = self._run_command(['nvidia-xconfig', '--version'])
-        if success:
-            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
-            version = version_match.group(1) if version_match else "Unknown"
-            components.append(SoftwareInfo(
-                name="nvidia-xconfig",
-                version=version,
-                path=self._find_tool_path('nvidia-xconfig'),
-                status="Available"
-            ))
-        
-        # Check for nvidia-modprobe
-        success, stdout, stderr = self._run_command(['nvidia-modprobe', '--version'])
-        if success:
-            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
-            version = version_match.group(1) if version_match else "Unknown"
-            components.append(SoftwareInfo(
-                name="nvidia-modprobe",
-                version=version,
-                path=self._find_tool_path('nvidia-modprobe'),
-                status="Available"
-            ))
-        
-        # Check for nvidia-persistenced
-        success, stdout, stderr = self._run_command(['nvidia-persistenced', '--version'])
-        if success:
-            version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
-            version = version_match.group(1) if version_match else "Unknown"
-            components.append(SoftwareInfo(
-                name="nvidia-persistenced",
-                version=version,
-                path=self._find_tool_path('nvidia-persistenced'),
-                status="Available"
-            ))
-        
-        return components
-    
-    def _check_missing_tools(self) -> List[SoftwareInfo]:
-        """Check for tools that were previously showing as 'Not found'"""
-        components = []
-        
-        if self.verbose:
-            self.logger.info("Checking for previously missing tools...")
-        
-        # List of tools to check with their expected commands
-        tools_to_check = [
-            ('nvidia-settings', ['nvidia-settings', '--version']),
-            ('nvidia-xconfig', ['nvidia-xconfig', '--version']),
-            ('nvidia-modprobe', ['nvidia-modprobe', '--version']),
-            ('nvidia-persistenced', ['nvidia-persistenced', '--version']),
+        # Additional tools that are not in the main nvidia_tools list
+        additional_tools = [
+            'nvidia-ctk',
+            'nvidia-container-cli',
+            'nvidia-cuda-mps-server',
+            'nvidia-cuda-mps-control'
         ]
         
-        for tool_name, cmd in tools_to_check:
-            success, stdout, stderr = self._run_command(cmd)
+        for tool in additional_tools:
+            success, stdout, stderr = self._run_command([tool, '--version'])
             if success:
                 version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', stdout)
                 version = version_match.group(1) if version_match else "Unknown"
                 components.append(SoftwareInfo(
-                    name=tool_name,
+                    name=tool,
                     version=version,
-                    path=self._find_tool_path(tool_name),
+                    path=self._find_tool_path(tool),
                     status="Available"
                 ))
-                if self.verbose:
-                    self.logger.info(f"Found {tool_name} version {version}")
-            else:
-                if self.verbose:
-                    self.logger.debug(f"{tool_name} not found: {stderr}")
+        
+        return components
+    
+    
+    def _discover_nvidia_ctk_config(self) -> List[SoftwareInfo]:
+        """Discover NVIDIA Container Toolkit configuration"""
+        components = []
+        
+        if self.verbose:
+            self.logger.info("Checking for NVIDIA Container Toolkit configuration...")
+        
+        # Check for nvidia-ctk binary
+        success, stdout, _ = self._run_command(['which', 'nvidia-ctk'])
+        if success and stdout.strip():
+            nvidia_ctk_path = stdout.strip()
+            
+            # Get version
+            success, version_output, _ = self._run_command(['nvidia-ctk', '--version'])
+            version = "Unknown"
+            if success and version_output:
+                version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', version_output)
+                if version_match:
+                    version = version_match.group(1)
+            
+            components.append(SoftwareInfo(
+                name="nvidia-ctk",
+                version=version,
+                path=nvidia_ctk_path,
+                status="Available"
+            ))
+            
+            # Check nvidia-ctk configuration
+            config_paths = [
+                '/etc/nvidia-container-runtime/config.toml',
+                '/usr/local/nvidia-toolkit/config.toml',
+                '/etc/nvidia-container-toolkit/config.toml'
+            ]
+            
+            for config_path in config_paths:
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, 'r') as f:
+                            config_content = f.read()
+                            components.append(SoftwareInfo(
+                                name=f"nvidia-ctk-config ({config_path})",
+                                version="Config",
+                                path=config_path,
+                                status="Available"
+                            ))
+                    except Exception as e:
+                        if self.verbose:
+                            self.logger.warning(f"Could not read nvidia-ctk config {config_path}: {e}")
+        
+        # Check for nvidia-container-cli
+        success, stdout, _ = self._run_command(['which', 'nvidia-container-cli'])
+        if success and stdout.strip():
+            components.append(SoftwareInfo(
+                name="nvidia-container-cli",
+                version="Available",
+                path=stdout.strip(),
+                status="Available"
+            ))
         
         return components
     
