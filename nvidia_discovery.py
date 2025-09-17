@@ -252,31 +252,6 @@ class NVIDIADiscovery:
             if success and stdout.strip():
                 gpu.compute_capability = stdout.strip()
             
-            # Always try to get CUDA version from nvidia-smi version output
-            success, stdout, stderr = self._run_command(['nvidia-smi', '--version'])
-            if success and stdout:
-                self.logger.debug(f"nvidia-smi version output: {stdout}")
-                # Parse CUDA version from nvidia-smi version output - try multiple patterns
-                cuda_version_found = False
-                for line in stdout.split('\n'):
-                    # Try different patterns for CUDA version
-                    if 'CUDA Version:' in line:
-                        cuda_ver = line.split('CUDA Version:')[1].strip().split()[0]
-                        gpu.cuda_version = cuda_ver
-                        self.logger.debug(f"Extracted CUDA version from 'CUDA Version:': {cuda_ver}")
-                        cuda_version_found = True
-                        break
-                    elif 'CUDA' in line and 'Version' in line:
-                        # Try to extract from lines like "CUDA 12.6" or similar
-                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
-                        if cuda_match:
-                            gpu.cuda_version = cuda_match.group(1)
-                            self.logger.debug(f"Extracted CUDA version from pattern: {gpu.cuda_version}")
-                            cuda_version_found = True
-                            break
-                
-                if not cuda_version_found and self.verbose:
-                    self.logger.warning(f"Could not extract CUDA version from nvidia-smi output: {stdout}")
         except Exception as e:
             self.logger.debug(f"Could not enrich GPU {gpu.index} info: {e}")
     
@@ -940,7 +915,6 @@ class NVIDIADiscovery:
                 report.append(f"GPU {i}:")
                 report.append(f"  Name: {gpu['name']}")
                 report.append(f"  Driver Version: {gpu['driver_version']}")
-                report.append(f"  CUDA Version: {gpu['cuda_version']}")
                 report.append(f"  Memory: {gpu['memory_used']}/{gpu['memory_total']} MB")
                 report.append(f"  Utilization: GPU {gpu['utilization_gpu']}%, Memory {gpu['utilization_memory']}%")
                 report.append(f"  Temperature: {gpu['temperature']}°C")
@@ -955,17 +929,13 @@ class NVIDIADiscovery:
         report.append("SOFTWARE COMPONENTS")
         report.append("-" * 40)
         
-        # Group by version
-        version_groups = defaultdict(list)
-        for comp in components:
-            version_groups[comp['version']].append(comp)
+        # List each component independently
+        for comp in sorted(components, key=lambda x: x['name']):
+            report.append(f"{comp['name']}: {comp['version']} ({comp['status']})")
+            if comp['path'] != "Not found":
+                report.append(f"  Path: {comp['path']}")
         
-        for version, comps in sorted(version_groups.items()):
-            report.append(f"\nVersion {version} ({len(comps)} components):")
-            for comp in comps:
-                report.append(f"  - {comp['name']}: {comp['status']}")
-                if comp['path'] != "Not found":
-                    report.append(f"    Path: {comp['path']}")
+        report.append("")
         
         # Threshold Information
         thresholds = self._load_thresholds()
