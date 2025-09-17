@@ -59,6 +59,11 @@ class SystemInfo:
     architecture: str
     nvidia_driver_version: str
     cuda_runtime_version: str
+    uname_output: str
+    distribution: str
+    package_managers: List[str]
+    disk_info: Dict[str, Any]
+    network_info: str
 
 
 class NVIDIADiscovery:
@@ -113,6 +118,23 @@ class NVIDIADiscovery:
         kernel_version = platform.version()
         architecture = platform.machine()
         
+        # Get uname -a output
+        success, uname_output, _ = self._run_command(['uname', '-a'])
+        uname_output = uname_output.strip() if success else "Unknown"
+        
+        # Get distribution information
+        distribution = self._get_distribution()
+        
+        # Get package managers
+        package_managers = self._discover_package_managers()
+        
+        # Get disk information
+        disk_info = self._get_disk_info()
+        
+        # Get network information
+        success, network_info, _ = self._run_command(['ip', 'a'])
+        network_info = network_info.strip() if success else "Unknown"
+        
         # Get NVIDIA driver version
         success, stdout, _ = self._run_command(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader,nounits'])
         nvidia_driver_version = stdout.strip().split('\n')[0] if success and stdout.strip() else "Unknown"
@@ -132,7 +154,12 @@ class NVIDIADiscovery:
             kernel_version=kernel_version,
             architecture=architecture,
             nvidia_driver_version=nvidia_driver_version,
-            cuda_runtime_version=cuda_runtime_version
+            cuda_runtime_version=cuda_runtime_version,
+            uname_output=uname_output,
+            distribution=distribution,
+            package_managers=package_managers,
+            disk_info=disk_info,
+            network_info=network_info
         )
     
     def _parse_gpu_info(self, nvidia_smi_output: str) -> List[GPUInfo]:
@@ -558,20 +585,115 @@ class NVIDIADiscovery:
         
         return components
     
+    def _get_distribution(self) -> str:
+        """Get Linux distribution information"""
+        try:
+            with open('/etc/os-release', 'r') as f:
+                content = f.read()
+                for line in content.split('\n'):
+                    if line.startswith('PRETTY_NAME='):
+                        return line.split('=')[1].strip('"')
+                    elif line.startswith('NAME='):
+                        return line.split('=')[1].strip('"')
+        except:
+            pass
+        return "Unknown"
+    
+    def _discover_package_managers(self) -> List[str]:
+        """Discover available package managers on the system"""
+        package_managers = []
+        
+        # List of Unix/Linux package managers to check
+        pm_commands = [
+            # Debian/Ubuntu family
+            ('apt', 'apt --version'),
+            ('apt-get', 'apt-get --version'),
+            ('dpkg', 'dpkg --version'),
+            ('aptitude', 'aptitude --version'),
+            
+            # Red Hat/CentOS/Fedora family
+            ('yum', 'yum --version'),
+            ('dnf', 'dnf --version'),
+            ('rpm', 'rpm --version'),
+            
+            # SUSE family
+            ('zypper', 'zypper --version'),
+            
+            # Arch Linux
+            ('pacman', 'pacman --version'),
+            
+            # Gentoo
+            ('portage', 'emerge --version'),
+            
+            # Universal package managers
+            ('snap', 'snap --version'),
+            ('flatpak', 'flatpak --version'),
+            ('appimage', 'appimage --version'),
+            
+            # Language-specific package managers
+            ('pip', 'pip --version'),
+            ('pip3', 'pip3 --version'),
+            ('conda', 'conda --version'),
+            ('npm', 'npm --version'),
+            ('yarn', 'yarn --version'),
+            ('gem', 'gem --version'),
+            ('cargo', 'cargo --version'),
+            ('go', 'go version'),
+            
+            # Container package managers
+            ('docker', 'docker --version'),
+            ('podman', 'podman --version'),
+        ]
+        
+        for pm_name, command in pm_commands:
+            success, _, _ = self._run_command(command.split())
+            if success:
+                package_managers.append(pm_name)
+        
+        return package_managers
+    
+    def _get_disk_info(self) -> Dict[str, Any]:
+        """Get system disk information"""
+        disk_info = {}
+        
+        # Get disk usage using df command
+        success, stdout, _ = self._run_command(['df', '-h'])
+        if success:
+            disk_info['df_output'] = stdout.strip()
+        
+        # Get disk devices using lsblk
+        success, stdout, _ = self._run_command(['lsblk'])
+        if success:
+            disk_info['lsblk_output'] = stdout.strip()
+        
+        # Get disk space summary
+        success, stdout, _ = self._run_command(['df', '-h', '/'])
+        if success:
+            lines = stdout.strip().split('\n')
+            if len(lines) > 1:
+                parts = lines[1].split()
+                if len(parts) >= 4:
+                    disk_info['root_filesystem'] = {
+                        'device': parts[0],
+                        'size': parts[1],
+                        'used': parts[2],
+                        'available': parts[3],
+                        'use_percent': parts[4] if len(parts) > 4 else 'Unknown',
+                        'mounted_on': parts[5] if len(parts) > 5 else 'Unknown'
+                    }
+        
+        return disk_info
+    
     def collect_logs(self) -> Dict[str, Any]:
-        """Collect system and VLLM logs from multiple locations"""
+        """Collect system logs from multiple locations"""
         logs = {}
         
         if self.verbose:
-            self.logger.info("Collecting system and VLLM logs...")
+            self.logger.info("Collecting system logs...")
         
         # Collect system logs from multiple locations
         system_logs = self._collect_system_logs()
         logs.update(system_logs)
-        
-        # Collect VLLM log from environment variable
-        vllm_logs = self._collect_vllm_logs()
-        logs.update(vllm_logs)
         
         return logs
     
@@ -613,90 +735,12 @@ class NVIDIADiscovery:
                 if self.verbose:
                     self.logger.warning(f"Exception reading {log_name} log: {e}")
         
-        # Try journalctl as fallback
-        try:
-            success, stdout, stderr = self._run_command(['journalctl', '--no-pager', '-n', '50'])
-            if success:
-                collected_logs.append({
-                    'name': 'journalctl',
-                    'path': 'systemd journal',
-                    'content': stdout,
-                    'lines': len(stdout.split('\n'))
-                })
-                if self.verbose:
-                    self.logger.info("Collected systemd journal log")
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Could not read journalctl: {e}")
         
         logs['system_logs'] = collected_logs
         logs['system_log_count'] = len(collected_logs)
         
         return logs
     
-    def _collect_vllm_logs(self) -> Dict[str, Any]:
-        """Collect VLLM logs from environment variable and common locations"""
-        logs = {}
-        
-        # Check VLLM_CONFIGURE_LOGGING environment variable
-        vllm_log_path = os.environ.get('VLLM_CONFIGURE_LOGGING')
-        if vllm_log_path and os.path.exists(vllm_log_path):
-            try:
-                success, stdout, stderr = self._run_command(['tail', '-n', '100', vllm_log_path])
-                if success:
-                    logs['vllm_log'] = stdout
-                    logs['vllm_log_path'] = vllm_log_path
-                    logs['vllm_log_source'] = 'environment_variable'
-                    if self.verbose:
-                        self.logger.info(f"Collected VLLM log from environment variable: {vllm_log_path}")
-                else:
-                    logs['vllm_log'] = f"Error reading VLLM log: {stderr}"
-                    logs['vllm_log_path'] = vllm_log_path
-                    logs['vllm_log_source'] = 'environment_variable_error'
-                    if self.verbose:
-                        self.logger.warning(f"Could not read VLLM log from {vllm_log_path}: {stderr}")
-            except Exception as e:
-                logs['vllm_log'] = f"Exception reading VLLM log: {str(e)}"
-                logs['vllm_log_path'] = vllm_log_path
-                logs['vllm_log_source'] = 'environment_variable_exception'
-                if self.verbose:
-                    self.logger.warning(f"Exception reading VLLM log: {e}")
-        else:
-            # Try common VLLM log locations
-            common_vllm_paths = [
-                '/var/log/vllm.log',
-                '/tmp/vllm.log',
-                './vllm.log',
-                '~/vllm.log',
-                '/opt/vllm/logs/vllm.log'
-            ]
-            
-            vllm_found = False
-            for log_path in common_vllm_paths:
-                expanded_path = os.path.expanduser(log_path)
-                if os.path.exists(expanded_path):
-                    try:
-                        success, stdout, stderr = self._run_command(['tail', '-n', '100', expanded_path])
-                        if success:
-                            logs['vllm_log'] = stdout
-                            logs['vllm_log_path'] = expanded_path
-                            logs['vllm_log_source'] = 'common_location'
-                            vllm_found = True
-                            if self.verbose:
-                                self.logger.info(f"Collected VLLM log from common location: {expanded_path}")
-                            break
-                    except Exception as e:
-                        if self.verbose:
-                            self.logger.debug(f"Could not read VLLM log from {expanded_path}: {e}")
-            
-            if not vllm_found:
-                logs['vllm_log'] = "VLLM_CONFIGURE_LOGGING environment variable not set and no VLLM logs found in common locations"
-                logs['vllm_log_path'] = "Not found"
-                logs['vllm_log_source'] = 'not_found'
-                if self.verbose:
-                    self.logger.info("VLLM_CONFIGURE_LOGGING not set and no VLLM logs found")
-        
-        return logs
     
     def run_discovery(self) -> Dict[str, Any]:
         """Run complete discovery process"""
@@ -741,11 +785,62 @@ class NVIDIADiscovery:
         report.append("-" * 40)
         report.append(f"Hostname: {sys_info['hostname']}")
         report.append(f"OS: {sys_info['os_name']} {sys_info['os_version']}")
+        report.append(f"Distribution: {sys_info['distribution']}")
         report.append(f"Kernel: {sys_info['kernel_version']}")
         report.append(f"Architecture: {sys_info['architecture']}")
         report.append(f"NVIDIA Driver: {sys_info['nvidia_driver_version']}")
         report.append(f"CUDA Runtime: {sys_info['cuda_runtime_version']}")
         report.append("")
+        
+        # Uname output
+        report.append("SYSTEM DETAILS")
+        report.append("-" * 40)
+        report.append(f"Uname: {sys_info['uname_output']}")
+        report.append("")
+        
+        # Package Managers
+        if sys_info['package_managers']:
+            report.append("PACKAGE MANAGERS")
+            report.append("-" * 40)
+            for pm in sys_info['package_managers']:
+                report.append(f"  - {pm}")
+            report.append("")
+        
+        # Disk Information
+        if 'disk_info' in sys_info and sys_info['disk_info']:
+            report.append("DISK INFORMATION")
+            report.append("-" * 40)
+            
+            if 'root_filesystem' in sys_info['disk_info']:
+                root_fs = sys_info['disk_info']['root_filesystem']
+                report.append(f"Root Filesystem: {root_fs['device']}")
+                report.append(f"  Size: {root_fs['size']}")
+                report.append(f"  Used: {root_fs['used']}")
+                report.append(f"  Available: {root_fs['available']}")
+                report.append(f"  Use%: {root_fs['use_percent']}")
+                report.append(f"  Mounted on: {root_fs['mounted_on']}")
+                report.append("")
+            
+            if 'df_output' in sys_info['disk_info']:
+                report.append("Disk Usage (df -h):")
+                df_lines = sys_info['disk_info']['df_output'].split('\n')[:10]  # Show first 10 lines
+                for line in df_lines:
+                    report.append(f"  {line}")
+                if len(sys_info['disk_info']['df_output'].split('\n')) > 10:
+                    report.append(f"  ... ({len(sys_info['disk_info']['df_output'].split('\n')) - 10} more lines)")
+                report.append("")
+        
+        # Network Information
+        if 'network_info' in sys_info and sys_info['network_info'] != "Unknown":
+            report.append("NETWORK INFORMATION")
+            report.append("-" * 40)
+            network_lines = sys_info['network_info'].split('\n')[:20]  # Show first 20 lines
+            for line in network_lines:
+                if line.strip():
+                    report.append(f"  {line}")
+            if len(sys_info['network_info'].split('\n')) > 20:
+                report.append(f"  ... ({len(sys_info['network_info'].split('\n')) - 20} more lines)")
+            report.append("")
         
         # GPU Information
         gpus = data['gpus']
@@ -816,23 +911,6 @@ class NVIDIADiscovery:
                 report.append("System Logs: No system logs found")
                 report.append("")
             
-            # VLLM log
-            if 'vllm_log' in logs:
-                report.append("VLLM Log:")
-                report.append(f"  Path: {logs.get('vllm_log_path', 'Not found')}")
-                report.append(f"  Source: {logs.get('vllm_log_source', 'unknown')}")
-                report.append("")
-                if logs['vllm_log'].startswith("Error") or logs['vllm_log'].startswith("Exception") or logs['vllm_log'].startswith("VLLM_CONFIGURE_LOGGING"):
-                    report.append(f"  Status: {logs['vllm_log']}")
-                else:
-                    # Show first 15 lines of VLLM log
-                    log_lines = logs['vllm_log'].split('\n')[:15]
-                    for line in log_lines:
-                        if line.strip():
-                            report.append(f"    {line}")
-                    if len(logs['vllm_log'].split('\n')) > 15:
-                        report.append(f"    ... ({len(logs['vllm_log'].split('\n')) - 15} more lines)")
-                report.append("")
         
         report.append("")
         report.append("=" * 80)
