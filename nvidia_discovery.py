@@ -929,11 +929,13 @@ class NVIDIADiscovery:
         report.append("SOFTWARE COMPONENTS")
         report.append("-" * 40)
         
-        # List each component independently
+        # Table header
+        report.append("Component,Version,Status,Path")
+        
+        # List each component in table format
         for comp in sorted(components, key=lambda x: x['name']):
-            report.append(f"{comp['name']}: {comp['version']} ({comp['status']})")
-            if comp['path'] != "Not found":
-                report.append(f"  Path: {comp['path']}")
+            path = comp['path'] if comp['path'] != "Not found" else "N/A"
+            report.append(f"{comp['name']},{comp['version']},{comp['status']},{path}")
         
         report.append("")
         
@@ -942,7 +944,7 @@ class NVIDIADiscovery:
         threshold_results = self._check_thresholds(data, thresholds)
         
         if threshold_results:
-            report.append("THRESHOLD VERIFICATION")
+            report.append("THRESHOLD REPORT")
             report.append("-" * 40)
             report.append(f"{'Component':<20} {'Measured':<15} {'Threshold':<15} {'Status':<10}")
             report.append("-" * 60)
