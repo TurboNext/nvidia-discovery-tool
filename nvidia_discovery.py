@@ -151,11 +151,14 @@ class NVIDIADiscovery:
                 line = line.strip()
                 self.logger.info(f"Processing line: {repr(line)}")
                 
-                # Pattern 1: "CUDA Version: X.Y"
-                if 'CUDA Version:' in line:
-                    cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
-                    self.logger.info(f"Found CUDA version via 'CUDA Version:': {cuda_runtime_version}")
-                    break
+                # Pattern 1: "CUDA Version        : X.Y" (with spaces before colon)
+                if 'CUDA Version' in line and ':' in line:
+                    # Split on ':' and take the part after it
+                    parts = line.split(':')
+                    if len(parts) > 1:
+                        cuda_runtime_version = parts[1].strip().split()[0]
+                        self.logger.info(f"Found CUDA version via 'CUDA Version': {cuda_runtime_version}")
+                        break
                 
                 # Pattern 2: "CUDA X.Y" (without "Version:")
                 elif 'CUDA' in line and any(char.isdigit() for char in line):
@@ -792,9 +795,11 @@ class NVIDIADiscovery:
                 # Simple and reliable CUDA version detection from nvidia-smi
                 for line in stdout.split('\n'):
                     line = line.strip()
-                    # Look for "CUDA Version: X.Y" pattern
-                    if 'CUDA Version:' in line:
-                        return line.split('CUDA Version:')[1].strip().split()[0]
+                    # Look for "CUDA Version        : X.Y" pattern (with spaces before colon)
+                    if 'CUDA Version' in line and ':' in line:
+                        parts = line.split(':')
+                        if len(parts) > 1:
+                            return parts[1].strip().split()[0]
             
             return 'Unknown'
         
