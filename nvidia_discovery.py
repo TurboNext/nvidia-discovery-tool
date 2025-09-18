@@ -143,19 +143,40 @@ class NVIDIADiscovery:
         cuda_runtime_version = "Unknown"
         success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
-            if self.verbose:
-                self.logger.info(f"nvidia-smi --version output: {stdout}")
-            # Simple and reliable CUDA version detection from nvidia-smi
+            # Always log nvidia-smi output for debugging
+            self.logger.info(f"nvidia-smi --version output: {repr(stdout)}")
+            
+            # Try multiple patterns for CUDA version detection
             for line in stdout.split('\n'):
                 line = line.strip()
-                if self.verbose:
-                    self.logger.info(f"Processing line: '{line}'")
-                # Look for "CUDA Version: X.Y" pattern
+                self.logger.info(f"Processing line: {repr(line)}")
+                
+                # Pattern 1: "CUDA Version: X.Y"
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
-                    if self.verbose:
-                        self.logger.info(f"Found CUDA version: {cuda_runtime_version}")
+                    self.logger.info(f"Found CUDA version via 'CUDA Version:': {cuda_runtime_version}")
                     break
+                
+                # Pattern 2: "CUDA X.Y" (without "Version:")
+                elif 'CUDA' in line and any(char.isdigit() for char in line):
+                    import re
+                    cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
+                    if cuda_match:
+                        cuda_runtime_version = cuda_match.group(1)
+                        self.logger.info(f"Found CUDA version via regex: {cuda_runtime_version}")
+                        break
+                
+                # Pattern 3: Look for any line with CUDA and version numbers
+                elif 'CUDA' in line:
+                    import re
+                    version_match = re.search(r'(\d+\.\d+)', line)
+                    if version_match:
+                        cuda_runtime_version = version_match.group(1)
+                        self.logger.info(f"Found CUDA version via general pattern: {cuda_runtime_version}")
+                        break
+            
+            if cuda_runtime_version == "Unknown":
+                self.logger.warning(f"Could not extract CUDA version from nvidia-smi output: {stdout}")
         
         return SystemInfo(
             hostname=hostname,
