@@ -740,7 +740,7 @@ class NVIDIADiscovery:
             if self.verbose:
                 self.logger.info(f"Threshold check: {component} = {measured_value} vs {threshold_value} ({operator})")
             
-            if measured_value and measured_value != "Unknown":
+            if measured_value:
                 passed = self._compare_versions(measured_value, threshold_value, operator)
                 results.append({
                     'component': component,
