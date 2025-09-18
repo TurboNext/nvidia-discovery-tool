@@ -145,33 +145,17 @@ class NVIDIADiscovery:
         if success and stdout:
             if self.verbose:
                 self.logger.info(f"nvidia-smi --version output: {stdout}")
-            # More comprehensive CUDA version detection from nvidia-smi
+            # Simple and reliable CUDA version detection from nvidia-smi
             for line in stdout.split('\n'):
                 line = line.strip()
                 if self.verbose:
                     self.logger.info(f"Processing line: '{line}'")
-                # Try multiple patterns for CUDA version
+                # Look for "CUDA Version: X.Y" pattern
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
                     if self.verbose:
-                        self.logger.info(f"Found CUDA version via 'CUDA Version:': {cuda_runtime_version}")
+                        self.logger.info(f"Found CUDA version: {cuda_runtime_version}")
                     break
-                elif 'CUDA' in line and 'Version' in line:
-                    # Try to extract from lines like "CUDA 12.6" or similar
-                    cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
-                    if cuda_match:
-                        cuda_runtime_version = cuda_match.group(1)
-                        if self.verbose:
-                            self.logger.info(f"Found CUDA version via pattern: {cuda_runtime_version}")
-                        break
-                elif 'CUDA' in line:
-                    # More general CUDA pattern matching
-                    cuda_match = re.search(r'CUDA\s+(\d+\.\d+(?:\.\d+)?)', line)
-                    if cuda_match:
-                        cuda_runtime_version = cuda_match.group(1)
-                        if self.verbose:
-                            self.logger.info(f"Found CUDA version via general pattern: {cuda_runtime_version}")
-                        break
         
         return SystemInfo(
             hostname=hostname,
@@ -784,22 +768,12 @@ class NVIDIADiscovery:
             # Last resort: try to get from nvidia-smi directly
             success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
             if success and stdout:
-                # More comprehensive CUDA version detection from nvidia-smi
+                # Simple and reliable CUDA version detection from nvidia-smi
                 for line in stdout.split('\n'):
                     line = line.strip()
-                    # Try multiple patterns for CUDA version
+                    # Look for "CUDA Version: X.Y" pattern
                     if 'CUDA Version:' in line:
                         return line.split('CUDA Version:')[1].strip().split()[0]
-                    elif 'CUDA' in line and 'Version' in line:
-                        # Try to extract from lines like "CUDA 12.6" or similar
-                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
-                        if cuda_match:
-                            return cuda_match.group(1)
-                    elif 'CUDA' in line:
-                        # More general CUDA pattern matching
-                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+(?:\.\d+)?)', line)
-                        if cuda_match:
-                            return cuda_match.group(1)
             
             return 'Unknown'
         
