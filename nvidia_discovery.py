@@ -155,6 +155,14 @@ class NVIDIADiscovery:
                         cuda_runtime_version = cuda_match.group(1)
                         break
         
+        # Fallback to nvcc if nvidia-smi didn't provide CUDA version
+        if cuda_runtime_version == "Unknown":
+            success, stdout, _ = self._run_command(['nvcc', '--version'])
+            if success and stdout:
+                match = re.search(r'release (\d+\.\d+)', stdout)
+                if match:
+                    cuda_runtime_version = match.group(1)
+        
         return SystemInfo(
             hostname=hostname,
             os_name=os_name,
@@ -775,6 +783,13 @@ class NVIDIADiscovery:
                         cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
                         if cuda_match:
                             return cuda_match.group(1)
+            
+            # Final fallback: try nvcc
+            success, stdout, _ = self._run_command(['nvcc', '--version'])
+            if success and stdout:
+                match = re.search(r'release (\d+\.\d+)', stdout)
+                if match:
+                    return match.group(1)
             
             return 'Unknown'
         
