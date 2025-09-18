@@ -1,2 +1,3 @@
 component,threshold,operator,description
 cuda_version,12.6,>=,CUDA version minimum requirement
+cudnn,1.0,>=,cuDNN version minimum requirement

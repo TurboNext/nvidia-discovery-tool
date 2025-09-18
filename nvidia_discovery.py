@@ -143,24 +143,34 @@ class NVIDIADiscovery:
         cuda_runtime_version = "Unknown"
         success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
+            if self.verbose:
+                self.logger.info(f"nvidia-smi --version output: {stdout}")
             # More comprehensive CUDA version detection from nvidia-smi
             for line in stdout.split('\n'):
                 line = line.strip()
+                if self.verbose:
+                    self.logger.info(f"Processing line: '{line}'")
                 # Try multiple patterns for CUDA version
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
+                    if self.verbose:
+                        self.logger.info(f"Found CUDA version via 'CUDA Version:': {cuda_runtime_version}")
                     break
                 elif 'CUDA' in line and 'Version' in line:
                     # Try to extract from lines like "CUDA 12.6" or similar
                     cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
                     if cuda_match:
                         cuda_runtime_version = cuda_match.group(1)
+                        if self.verbose:
+                            self.logger.info(f"Found CUDA version via pattern: {cuda_runtime_version}")
                         break
                 elif 'CUDA' in line:
                     # More general CUDA pattern matching
                     cuda_match = re.search(r'CUDA\s+(\d+\.\d+(?:\.\d+)?)', line)
                     if cuda_match:
                         cuda_runtime_version = cuda_match.group(1)
+                        if self.verbose:
+                            self.logger.info(f"Found CUDA version via general pattern: {cuda_runtime_version}")
                         break
         
         return SystemInfo(
@@ -793,6 +803,14 @@ class NVIDIADiscovery:
             
             return 'Unknown'
         
+        elif component == 'cudnn':
+            # Get cuDNN version from software components
+            components = data.get('software_components', [])
+            for comp in components:
+                if comp.get('name') == 'cudnn':
+                    return comp.get('version', 'Unknown')
+            return 'Unknown'
+        
         return "Unknown"
     
     def _compare_versions(self, measured: str, threshold: str, operator: str) -> bool:
@@ -942,6 +960,22 @@ class NVIDIADiscovery:
                 report.append(f"  PCI Bus ID: {gpu['pci_bus_id']}")
                 report.append(f"  Compute Capability: {gpu['compute_capability']}")
                 report.append("")
+        
+        # GPU Summary
+        if gpus:
+            report.append("GPU SUMMARY")
+            report.append("-" * 40)
+            
+            # Count unique Name/Driver Version combinations
+            gpu_combinations = {}
+            for gpu in gpus:
+                key = f"{gpu['name']} (Driver: {gpu['driver_version']})"
+                gpu_combinations[key] = gpu_combinations.get(key, 0) + 1
+            
+            # Display summary
+            for combination, count in sorted(gpu_combinations.items()):
+                report.append(f"  {combination}: {count} GPU(s)")
+            report.append("")
         
         # Software Components
         components = data['software_components']
