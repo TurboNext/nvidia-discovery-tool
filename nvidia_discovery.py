@@ -143,8 +143,10 @@ class NVIDIADiscovery:
         cuda_runtime_version = "Unknown"
         success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
         if success and stdout:
+            # More comprehensive CUDA version detection from nvidia-smi
             for line in stdout.split('\n'):
-                # Look for CUDA version in nvidia-smi output
+                line = line.strip()
+                # Try multiple patterns for CUDA version
                 if 'CUDA Version:' in line:
                     cuda_runtime_version = line.split('CUDA Version:')[1].strip().split()[0]
                     break
@@ -154,14 +156,12 @@ class NVIDIADiscovery:
                     if cuda_match:
                         cuda_runtime_version = cuda_match.group(1)
                         break
-        
-        # Fallback to nvcc if nvidia-smi didn't provide CUDA version
-        if cuda_runtime_version == "Unknown":
-            success, stdout, _ = self._run_command(['nvcc', '--version'])
-            if success and stdout:
-                match = re.search(r'release (\d+\.\d+)', stdout)
-                if match:
-                    cuda_runtime_version = match.group(1)
+                elif 'CUDA' in line:
+                    # More general CUDA pattern matching
+                    cuda_match = re.search(r'CUDA\s+(\d+\.\d+(?:\.\d+)?)', line)
+                    if cuda_match:
+                        cuda_runtime_version = cuda_match.group(1)
+                        break
         
         return SystemInfo(
             hostname=hostname,
@@ -774,8 +774,10 @@ class NVIDIADiscovery:
             # Last resort: try to get from nvidia-smi directly
             success, stdout, _ = self._run_command(['nvidia-smi', '--version'])
             if success and stdout:
+                # More comprehensive CUDA version detection from nvidia-smi
                 for line in stdout.split('\n'):
-                    # Try different patterns for CUDA version
+                    line = line.strip()
+                    # Try multiple patterns for CUDA version
                     if 'CUDA Version:' in line:
                         return line.split('CUDA Version:')[1].strip().split()[0]
                     elif 'CUDA' in line and 'Version' in line:
@@ -783,13 +785,11 @@ class NVIDIADiscovery:
                         cuda_match = re.search(r'CUDA\s+(\d+\.\d+)', line)
                         if cuda_match:
                             return cuda_match.group(1)
-            
-            # Final fallback: try nvcc
-            success, stdout, _ = self._run_command(['nvcc', '--version'])
-            if success and stdout:
-                match = re.search(r'release (\d+\.\d+)', stdout)
-                if match:
-                    return match.group(1)
+                    elif 'CUDA' in line:
+                        # More general CUDA pattern matching
+                        cuda_match = re.search(r'CUDA\s+(\d+\.\d+(?:\.\d+)?)', line)
+                        if cuda_match:
+                            return cuda_match.group(1)
             
             return 'Unknown'
         
@@ -797,6 +797,10 @@ class NVIDIADiscovery:
     
     def _compare_versions(self, measured: str, threshold: str, operator: str) -> bool:
         """Compare version strings"""
+        # If measured value is Unknown, fail the threshold
+        if measured == "Unknown" or measured == "Not found":
+            return False
+            
         try:
             # Convert version strings to comparable format
             measured_parts = [int(x) for x in measured.split('.')]
