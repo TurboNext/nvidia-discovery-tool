@@ -328,6 +328,10 @@ class NVIDIADiscovery:
         container_support = self._discover_container_support()
         components.extend(container_support)
         
+        # Check for AppImage support
+        appimage_support = self._discover_appimage_support()
+        components.extend(appimage_support)
+        
         return components
     
     def _get_tool_version(self, tool: str) -> str:
@@ -600,6 +604,83 @@ class NVIDIADiscovery:
         
         return components
     
+    def _discover_appimage_support(self) -> List[SoftwareInfo]:
+        """Discover AppImage support and installed AppImages"""
+        components = []
+        
+        if self.verbose:
+            self.logger.info("Checking for AppImage support...")
+        
+        # Check for AppImageLauncher
+        success, stdout, _ = self._run_command(['which', 'appimagelauncher'])
+        if success and stdout.strip():
+            # Get version
+            success, version_output, _ = self._run_command(['appimagelauncher', '--version'])
+            version = "Unknown"
+            if success and version_output:
+                version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', version_output)
+                if version_match:
+                    version = version_match.group(1)
+            
+            components.append(SoftwareInfo(
+                name="appimagelauncher",
+                version=version,
+                path=stdout.strip(),
+                status="Available"
+            ))
+        
+        # Check for AppImage runtime
+        success, stdout, _ = self._run_command(['which', 'appimaged'])
+        if success and stdout.strip():
+            components.append(SoftwareInfo(
+                name="appimaged",
+                version="Runtime",
+                path=stdout.strip(),
+                status="Available"
+            ))
+        
+        # Check for common AppImage directories and list some AppImages
+        appimage_dirs = [
+            os.path.expanduser('~/Applications'),
+            os.path.expanduser('~/bin'),
+            '/opt/appimages',
+            '/usr/local/bin'
+        ]
+        
+        appimages_found = []
+        for directory in appimage_dirs:
+            if os.path.exists(directory):
+                try:
+                    for file in os.listdir(directory):
+                        if file.endswith('.AppImage') or file.endswith('.appimage'):
+                            full_path = os.path.join(directory, file)
+                            if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
+                                appimages_found.append(full_path)
+                except (PermissionError, OSError):
+                    continue
+        
+        # Add found AppImages to components
+        for appimage_path in appimages_found[:10]:  # Limit to first 10 to avoid clutter
+            appimage_name = os.path.basename(appimage_path)
+            components.append(SoftwareInfo(
+                name=f"appimage-{appimage_name}",
+                version="AppImage",
+                path=appimage_path,
+                status="Available"
+            ))
+        
+        # Check for AppImage integration in desktop environment
+        success, stdout, _ = self._run_command(['which', 'xdg-desktop-portal'])
+        if success and stdout.strip():
+            components.append(SoftwareInfo(
+                name="xdg-desktop-portal",
+                version="Available",
+                path=stdout.strip(),
+                status="Available"
+            ))
+        
+        return components
+    
     def _get_distribution(self) -> str:
         """Get Linux distribution information"""
         try:
@@ -644,6 +725,7 @@ class NVIDIADiscovery:
             ('snap', 'snap --version'),
             ('flatpak', 'flatpak --version'),
             ('appimage', 'appimage --version'),
+            ('nix', 'nix --version'),
             
             # Language-specific package managers
             ('pip', 'pip --version'),
@@ -697,6 +779,21 @@ class NVIDIADiscovery:
         success, stdout, _ = self._run_command(['lsblk'])
         if success:
             disk_info['lsblk_output'] = stdout.strip()
+        
+        # Get detailed disk information with model and rotational info
+        success, stdout, _ = self._run_command(['lsblk', '-o', 'NAME,MODEL,TYPE,ROTA'])
+        if success:
+            disk_info['lsblk_detailed'] = stdout.strip()
+        
+        # Get rotational information for all block devices
+        success, stdout, _ = self._run_command(['sh', '-c', 'cat /sys/block/sd*/queue/rotational 2>/dev/null || echo "No rotational info available"'])
+        if success:
+            disk_info['rotational_info'] = stdout.strip()
+        
+        # Get disk format information using blkid
+        success, stdout, _ = self._run_command(['blkid'])
+        if success:
+            disk_info['disk_formats'] = stdout.strip()
         
         # Get disk space summary
         success, stdout, _ = self._run_command(['df', '-h', '/'])
@@ -919,29 +1016,62 @@ class NVIDIADiscovery:
                 report.append(f"  Mounted on: {root_fs['mounted_on']}")
                 report.append("")
             
+            if 'lsblk_detailed' in sys_info['disk_info']:
+                report.append("Disk Devices (lsblk -o NAME,MODEL,TYPE,ROTA):")
+                lsblk_lines = sys_info['disk_info']['lsblk_detailed'].split('\n')
+                for line in lsblk_lines:
+                    report.append(f"  {line}")
+                report.append("")
+            
+            if 'rotational_info' in sys_info['disk_info']:
+                report.append("Rotational Information (cat /sys/block/sd*/queue/rotational):")
+                rotational_lines = sys_info['disk_info']['rotational_info'].split('\n')
+                for line in rotational_lines:
+                    report.append(f"  {line}")
+                report.append("")
+            
+            if 'disk_formats' in sys_info['disk_info']:
+                report.append("Disk Formats (blkid):")
+                format_lines = sys_info['disk_info']['disk_formats'].split('\n')
+                for line in format_lines:
+                    report.append(f"  {line}")
+                report.append("")
+            
             if 'df_output' in sys_info['disk_info']:
                 report.append("Disk Usage (df -h):")
-                df_lines = sys_info['disk_info']['df_output'].split('\n')[:10]  # Show first 10 lines
+                df_lines = sys_info['disk_info']['df_output'].split('\n')
                 for line in df_lines:
                     report.append(f"  {line}")
-                if len(sys_info['disk_info']['df_output'].split('\n')) > 10:
-                    report.append(f"  ... ({len(sys_info['disk_info']['df_output'].split('\n')) - 10} more lines)")
                 report.append("")
         
         # Network Information
         if 'network_info' in sys_info and sys_info['network_info'] != "Unknown":
             report.append("NETWORK INFORMATION")
             report.append("-" * 40)
-            network_lines = sys_info['network_info'].split('\n')[:20]  # Show first 20 lines
+            network_lines = sys_info['network_info'].split('\n')
             for line in network_lines:
                 if line.strip():
                     report.append(f"  {line}")
-            if len(sys_info['network_info'].split('\n')) > 20:
-                report.append(f"  ... ({len(sys_info['network_info'].split('\n')) - 20} more lines)")
+            report.append("")
+        
+        # GPU Summary
+        gpus = data['gpus']
+        if gpus:
+            report.append("GPU SUMMARY")
+            report.append("-" * 40)
+            
+            # Count unique Name/Driver Version combinations
+            gpu_combinations = {}
+            for gpu in gpus:
+                key = f"{gpu['name']} (Driver: {gpu['driver_version']})"
+                gpu_combinations[key] = gpu_combinations.get(key, 0) + 1
+            
+            # Display summary
+            for combination, count in sorted(gpu_combinations.items()):
+                report.append(f"  {combination}: {count} GPU(s)")
             report.append("")
         
         # GPU Information
-        gpus = data['gpus']
         report.append("GPU INFORMATION")
         report.append("-" * 40)
         report.append(f"Total GPUs: {len(gpus)}")
@@ -960,22 +1090,6 @@ class NVIDIADiscovery:
                 report.append(f"  PCI Bus ID: {gpu['pci_bus_id']}")
                 report.append(f"  Compute Capability: {gpu['compute_capability']}")
                 report.append("")
-        
-        # GPU Summary
-        if gpus:
-            report.append("GPU SUMMARY")
-            report.append("-" * 40)
-            
-            # Count unique Name/Driver Version combinations
-            gpu_combinations = {}
-            for gpu in gpus:
-                key = f"{gpu['name']} (Driver: {gpu['driver_version']})"
-                gpu_combinations[key] = gpu_combinations.get(key, 0) + 1
-            
-            # Display summary
-            for combination, count in sorted(gpu_combinations.items()):
-                report.append(f"  {combination}: {count} GPU(s)")
-            report.append("")
         
         # Software Components
         components = data['software_components']
